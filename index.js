@@ -135,7 +135,7 @@ app.post('/signin',(req,res)=>{
         }
     })
 })
-const port = 8080 ;
+const port = 5050 ;
 httpServer.listen(port,(err)=>{
     if(err) throw err;
     console.log('server started'); 
