@@ -23,119 +23,103 @@ db.once('open', function (callback) {
 });
 
 var usersDict = {}
+var selectedUser = {}
 //var myId = null;
+const GetUsersService = require('./Services/getUsersService').GetUsersService;
+const {addChat, getRoom} = require('./Models/ChatRoom');
+
 io.on("connection", socket =>{
     console.log("socket is active",socket.id);
 
-    socket.once("users",(myData)=>{
+    socket.once("users",async(myData)=>{
         var myId = myData.userId;
-        usersDict[myId] = socket.id
-        console.log(usersDict);
-        User.find({},(err,validUsers)=>{
-            io.to(usersDict[myId]).emit("users",validUsers)
-        })
+        socket.data.id = myId;
+        usersDict[myId] = socket.id;
+        //console.log(usersDict);
+        const validUsers = await GetUsersService();
+        io.to(usersDict[myId]).emit("users",validUsers);
+        
     })
-    socket.on("getRoom",(selectedIdPayload)=>{
-        selectedId = selectedIdPayload.selectedId;
+    socket.on("getRoom",async(selectedIdPayload)=>{
+        var selectedId = selectedIdPayload.selectedId;
         var myId = selectedIdPayload.userId;
         //console.log(selectedId,myId);
-        ChatRoom.findOne({participants: { $all : [myId, selectedId]}},async (err,validRoom)=>{
-            if(err) throw err;
-            //console.log(validRoom);
-            if(validRoom){
-                io.to(usersDict[myId]).emit("getRoom",validRoom);
-            }
-            else{
-                var curRoomId = await ChatRoom.countDocuments({}) + 1;
-                var room = new ChatRoom({
-                    roomId : curRoomId,
-                    participants : [myId,selectedId],
-                    messages : []
-                });
-                //console.log(room);
-                room.save((err)=>{
-                    if(err) throw err;
-                    console.log('room created ', curRoomId);
-                    io.to(usersDict[myId]).emit("getRoom",room)
-                })
-            }
-        })
+        var validRoom = await getRoom(selectedIdPayload);
+        selectedUser[myId] = selectedId;
+        //console.log(selectedUser);
+        io.to(usersDict[myId]).emit("getRoom",validRoom);
     })
-    socket.on("chat",(payload) => {
+    socket.on("chat",async (payload) => {
         //console.log(payload) // payload = {message , selectedId, roomId}
         var myId = payload.userId;
-        ChatRoom.findOne({roomId : payload.roomId},(err,validRoom)=>{
-            //console.log(validRoom);
-            var message = {
-                messageId : validRoom.messages.length + 1,
-                senderId : myId,
-                time : new Date(),
-                message : payload.message
+        var res = await addChat(payload);
+        if(res.status == 400){
+            throw message.data;
+        }
+        else{
+            res.data.sender = payload.userId;
+            if(usersDict[payload.selectedId] && selectedUser[payload.selectedId] && selectedUser[payload.selectedId] === myId){
+                io.to(usersDict[payload.selectedId]).emit("chat",res.data)
             }
-            validRoom.messages.push(message);
-            validRoom.save((err)=>{
-                if(err) throw err;
-                //console.log('message added');
-                // console.log(usersDict, payload.selectedId, usersDict[payload.selectedId], myId, usersDict[myId]);
-                if(usersDict[payload.selectedId]){
-                    io.to(usersDict[payload.selectedId]).emit("chat",message)
-                }
-                io.to(usersDict[myId]).emit("chat",message);
-            })
-        })
-        // io.emit("chat", payload);
+            io.to(usersDict[myId]).emit("chat",res.data);
+        }
     })
-});
+
+    socket.on("fileTransfer", async (payload) => {
+        const response = await fileSaveService(payload);
+        console.log(response);
+    })
+
+    socket.on("callUser", (data) => {
+        if(usersDict[data.userToCall]){
+            io.to(usersDict[data.userToCall]).emit("recieveCall", { signal: data.signalData, from: data.from});
+        }
+    })
+
+    socket.on("endCall",(data)=>{
+        io.to(usersDict[data.callerId]).emit("callEnded",{});
+        io.to(usersDict[data.receiverId]).emit("callEnded",{});
+    })
+
+    socket.on("acceptCall", (data) => {
+        io.to(usersDict[data.to]).emit("callAccepted", data.signal);
+    })
+
+    socket.on("disconnect",()=>{
+        console.log("disconnected",socket.id);
+        Object.entries(usersDict).forEach(([key, value]) => {
+            if(value == socket.id){
+                delete usersDict[key];
+                delete selectedUser[key];
+            }
+        })
+        
+    })
+}); 
 
 app.get("/",(req,res)=>{
     res.send("Pipeline started");
 })
-app.post('/signup',async (req,res)=>{
-    var newUser = new User(req.body);
-    var resObj = {
-        isSuccess : false,
-        message : ""
-    }
-    newUser.userId = await User.countDocuments({}) + 1;
-    User.findOne({email:req.body.email},(err,data)=>{
-        if(err) throw err;
-        if(data){
-            resObj.isSuccess = false,
-            resObj.message = "email already exists"
-            res.send(resObj)
-        }
-        else{
-            newUser.save((err)=>{
-                if(err) throw err;
-                console.log('saved successfully')
-                resObj.isSuccess = true,
-                resObj.message = 'user added successfully'
-                res.send(resObj);
-            })
-        }
-    })
+
+//signup
+const signUpService = require('./Services/signupService').signUpService;
+app.post("/signup", async (req,res)=>{
+    const data = await signUpService(req.body);
+    res.send(data);
 })
 
-app.post('/signin',(req,res)=>{
-    var email = req.body.email;
-    var password = req.body.pass;
-    var resObj = {
-        isSuccess: false,
-        userId : null
-    }
-    User.findOne({email:email, password:password},(err,data)=>{
-        //console.log(data);
-        if(data){
-            resObj.isSuccess = true;
-            resObj.userId = data.userId;
-            res.send(resObj);
-        }
-        else{
-            res.send(resObj);
-        }
-    })
+//signin
+const SignInService = require('./Services/signInService').SignInService;
+//const { use } = require('express/lib/router');
+const { fileSaveService } = require('./Services/fileSaveService');
+app.post("/signin", async(req,res)=>{
+    //console.log(req.body);
+    const response = await SignInService(req.body);
+    //console.log(response);
+    res.send(response);
 })
-const port = process.env.PORT || 5000 ;
+
+const port = process.env.PORT || 8080 ;
 httpServer.listen(port,(err)=>{
     if(err) throw err;
     console.log('server started'); 
